@@ -4,6 +4,7 @@ import logging
 import re
 import urllib.parse
 import uuid
+from types import SimpleNamespace
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -6057,6 +6058,31 @@ async def verify_image_token(request: Request, db: AsyncSession = Depends(get_db
         raise credentials_exception
 
 
+_IMAGE_SETTINGS_TTL = 30.0
+_image_settings: tuple[float, SimpleNamespace | None] | None = None  # (_time.monotonic() when read, value)
+
+
+async def _cached_image_settings(db: AsyncSession) -> SimpleNamespace | None:
+    """image_cache_enabled / image_cache_limit_gb, read at most every 30 seconds.
+
+    serve_image runs once per poster and a page shows dozens, while these two values
+    change only when an admin edits them (an edit shows within 30 seconds). A
+    namespace is returned rather than the ORM row, which belongs to one session.
+    """
+    global _image_settings
+    now = _time.monotonic()
+    if _image_settings is not None and now - _image_settings[0] < _IMAGE_SETTINGS_TTL:
+        return _image_settings[1]
+    row = (
+        await db.execute(
+            select(GlobalSettings.image_cache_enabled, GlobalSettings.image_cache_limit_gb).where(GlobalSettings.id == 1)
+        )
+    ).first()
+    value = SimpleNamespace(image_cache_enabled=row[0], image_cache_limit_gb=row[1]) if row else None
+    _image_settings = (now, value)
+    return value
+
+
 @router.get("/image/{size}/{path:path}")
 async def serve_image(
     size: str,
@@ -6076,9 +6102,8 @@ async def serve_image(
     )
     upstream = upstream_image_url(size, path)
 
-    # Check settings
-    settings_stmt = select(GlobalSettings).where(GlobalSettings.id == 1)
-    gs = (await db.execute(settings_stmt)).scalar_one_or_none()
+    # Check settings (two columns, cached for a few seconds)
+    gs = await _cached_image_settings(db)
 
     if not gs or not gs.image_cache_enabled:
         return RedirectResponse(upstream)

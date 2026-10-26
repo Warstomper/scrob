@@ -86,8 +86,16 @@ async def download_and_cache_image(db, size: str, path: str, image_type: str = "
 
     if cached:
         if local_path.exists():
-            cached.last_accessed = datetime.now(timezone.utc)
-            await db.commit()
+            # last_accessed only orders eviction (oldest first), so an hour of
+            # resolution is plenty: a poster touched within the hour skips the
+            # UPDATE and the COMMIT (a WAL flush) it used to cost on every request.
+            now = datetime.now(timezone.utc)
+            last = cached.last_accessed
+            if last is not None and last.tzinfo is None:
+                last = last.replace(tzinfo=timezone.utc)
+            if last is None or now - last > timedelta(hours=1):
+                cached.last_accessed = now
+                await db.commit()
             return str(local_path)
         else:
             await db.delete(cached)
