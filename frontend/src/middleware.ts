@@ -115,7 +115,15 @@ export const onRequest = defineMiddleware(async (context, next) => {
     }
   };
 
-  if (token) {
+  // Poster images, static assets and the /api/proxy passthrough are authenticated
+  // by the backend itself (every proxied request carries the token and is validated
+  // there), so the extra /auth/me round trip per request - one per poster on a
+  // page - is dropped. Pages still resolve the user below.
+  const skipUserLookup = isStaticAsset || pathname.startsWith("/api/proxy/");
+
+  if (token && skipUserLookup) {
+    context.locals.token = token;
+  } else if (token) {
     try {
       // Verify token and get user info
       const user = await api.auth.me(token);
